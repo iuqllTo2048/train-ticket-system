@@ -1,0 +1,185 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"example.com/train-ticket-system/backend-app/internal/model"
+	"example.com/train-ticket-system/backend-app/internal/repository"
+)
+
+var ErrInvalidInput = errors.New("请求参数不合法")
+
+type TrainService struct {
+	repo repository.TrainRepository
+}
+
+func NewTrainService(
+	repo repository.TrainRepository,
+) *TrainService {
+	return &TrainService{repo: repo}
+}
+
+type CreateTrainInput struct {
+	ID          string
+	FromStation string
+	ToStation   string
+	PriceCents  int64
+	TotalSeats  int
+}
+
+type TrainPatch struct {
+	FromStation *string
+	ToStation   *string
+	PriceCents  *int64
+}
+
+// Get 查询车次。
+func (s *TrainService) Get(
+	ctx context.Context,
+	id string,
+) (model.Train, error) {
+	return s.repo.FindByID(ctx, id)
+}
+
+// List 查询车次列表。
+func (s *TrainService) List(
+	ctx context.Context,
+	from, to string,
+) ([]model.Train, error) {
+
+	return s.repo.List(
+		ctx,
+		strings.TrimSpace(from),
+		strings.TrimSpace(to),
+	)
+}
+
+// Create 新增车次。
+func (s *TrainService) Create(
+	ctx context.Context,
+	in CreateTrainInput,
+) (model.Train, error) {
+
+	in.ID = strings.TrimSpace(in.ID)
+	in.FromStation = strings.TrimSpace(in.FromStation)
+	in.ToStation = strings.TrimSpace(in.ToStation)
+
+	if len(in.ID) == 0 ||
+		len(in.ID) > 32 ||
+		len(in.FromStation) == 0 ||
+		len(in.FromStation) > 64 ||
+		len(in.ToStation) == 0 ||
+		len(in.ToStation) > 64 ||
+		in.FromStation == in.ToStation ||
+		in.PriceCents <= 0 ||
+		in.TotalSeats <= 0 {
+
+		return model.Train{}, fmt.Errorf(
+			"%w: 车次、站名、票价或座位数错误",
+			ErrInvalidInput,
+		)
+	}
+
+	train := model.Train{
+		ID:             in.ID,
+		FromStation:    in.FromStation,
+		ToStation:      in.ToStation,
+		PriceCents:     in.PriceCents,
+		TotalSeats:     in.TotalSeats,
+		AvailableSeats: in.TotalSeats,
+	}
+
+	if err := s.repo.Create(ctx, train); err != nil {
+		return model.Train{}, err
+	}
+
+	return s.repo.FindByID(ctx, train.ID)
+}
+
+// Update 更新车次信息。
+// 不允许通过普通接口直接修改余票。
+func (s *TrainService) Update(
+	ctx context.Context,
+	id string,
+	patch TrainPatch,
+) (model.Train, error) {
+
+	if patch.FromStation == nil &&
+		patch.ToStation == nil &&
+		patch.PriceCents == nil {
+
+		return model.Train{}, fmt.Errorf(
+			"%w: 至少提供一个修改字段",
+			ErrInvalidInput,
+		)
+	}
+
+	train, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return model.Train{}, err
+	}
+
+	changes := map[string]any{}
+
+	if patch.FromStation != nil {
+		train.FromStation = strings.TrimSpace(*patch.FromStation)
+		changes["from_station"] = train.FromStation
+	}
+
+	if patch.ToStation != nil {
+		train.ToStation = strings.TrimSpace(*patch.ToStation)
+		changes["to_station"] = train.ToStation
+	}
+
+	if patch.PriceCents != nil {
+		train.PriceCents = *patch.PriceCents
+		changes["price_cents"] = train.PriceCents
+	}
+
+	if train.FromStation == "" ||
+		train.ToStation == "" ||
+		len(train.FromStation) > 64 ||
+		len(train.ToStation) > 64 ||
+		train.FromStation == train.ToStation ||
+		train.PriceCents <= 0 {
+
+		return model.Train{}, fmt.Errorf(
+			"%w: 修改后的车次信息不合法",
+			ErrInvalidInput,
+		)
+	}
+
+	if err := s.repo.UpdateInfo(ctx, id, changes); err != nil {
+		return model.Train{}, err
+	}
+
+	return s.repo.FindByID(ctx, id)
+}
+
+// Delete 删除车次。
+func (s *TrainService) Delete(
+	ctx context.Context,
+	id string,
+) error {
+	return s.repo.Delete(ctx, id)
+}
+
+// Purchase 执行购票业务。
+func (s *TrainService) Purchase(
+	ctx context.Context,
+	id string,
+	quantity int,
+) (model.PurchaseLog, error) {
+
+	if quantity <= 0 || quantity > 10 {
+		return model.PurchaseLog{}, fmt.Errorf(
+			"%w: 每次购买数量必须在 1 到 10 之间",
+			ErrInvalidInput,
+		)
+	}
+
+	return s.repo.Purchase(ctx, id, quantity)
+}
