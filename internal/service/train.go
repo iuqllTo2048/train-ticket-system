@@ -167,19 +167,34 @@ func (s *TrainService) Delete(
 	return s.repo.Delete(ctx, id)
 }
 
-// Purchase 执行购票业务。
+// Purchase 执行购票业务，并返回正式订单。
 func (s *TrainService) Purchase(
 	ctx context.Context,
 	id string,
+	userID string,
 	quantity int,
-) (model.PurchaseLog, error) {
+) (model.Order, error) {
+
+	userID = strings.TrimSpace(userID)
+
+	if userID == "" || len(userID) > 64 {
+		return model.Order{}, fmt.Errorf(
+			"%w: 用户编号不合法",
+			ErrInvalidInput,
+		)
+	}
 
 	if quantity <= 0 || quantity > 10 {
-		return model.PurchaseLog{}, fmt.Errorf(
+		return model.Order{}, fmt.Errorf(
 			"%w: 每次购买数量必须在 1 到 10 之间",
 			ErrInvalidInput,
 		)
 	}
 
-	return s.repo.Purchase(ctx, id, quantity)
+	return s.repo.Purchase(
+		ctx,
+		id,
+		userID,
+		quantity,
+	)
 }

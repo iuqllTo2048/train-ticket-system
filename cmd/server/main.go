@@ -80,10 +80,15 @@ func main() {
 		log.Fatalf("数据库 Ping 失败: %v", err)
 	}
 
-	// 手动依赖注入。
-	repo := repository.NewGORMTrainRepository(db)
-	svc := service.NewTrainService(repo)
-	trainHandler := handler.NewTrainHandler(svc)
+	// 车次手动依赖注入。
+	trainRepo := repository.NewGORMTrainRepository(db)
+	trainSvc := service.NewTrainService(trainRepo)
+	trainHandler := handler.NewTrainHandler(trainSvc)
+
+	//  订单查询依赖注入
+	orderRepo := repository.NewGORMOrderRepository(db)
+	orderSvc := service.NewOrderService(orderRepo)
+	orderHandler := handler.NewOrderHandler(orderSvc)
 
 	// Gin 路由。
 	router := gin.Default()
@@ -95,6 +100,7 @@ func main() {
 	})
 
 	trainHandler.RegisterRoutes(router)
+	orderHandler.RegisterRoutes(router)
 
 	log.Println(
 		"backend-app 已连接 MySQL，HTTP 地址 http://127.0.0.1:8080",

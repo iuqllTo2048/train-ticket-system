@@ -2,11 +2,64 @@ package repository
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"math"
 
 	"example.com/train-ticket-system/backend-app/internal/model"
 	"gorm.io/gorm"
 )
+
+var (
+	ErrNotFound = errors.New("车次不存在")
+
+	ErrInsufficientSeats = errors.New("余票不足")
+
+	ErrConflict = errors.New("数据冲突或存在购票记录")
+)
+
+type TrainRepository interface {
+
+	// 查询单个车次
+	FindByID(
+		ctx context.Context,
+		id string,
+	) (model.Train, error)
+
+	// 查询车次列表
+	List(
+		ctx context.Context,
+		from, to string,
+	) ([]model.Train, error)
+
+	// 新增车次
+	Create(
+		ctx context.Context,
+		train model.Train,
+	) error
+
+	// 更新车次基本信息
+	UpdateInfo(
+		ctx context.Context,
+		id string,
+		changes map[string]any,
+	) error
+
+	// 删除车次
+	Delete(
+		ctx context.Context,
+		id string,
+	) error
+
+	// 原子扣票,创建订单及购票流水
+	Purchase(
+		ctx context.Context,
+		id string,
+		userID string,
+		quantity int,
+	) (model.Order, error)
+}
 
 type GORMTrainRepository struct {
 	db *gorm.DB
@@ -128,16 +181,43 @@ func (r *GORMTrainRepository) Delete(
 	return nil
 }
 
-// Purchase 扣减真实余票，并写入购票流水。
+// generateOrderNo 生成随机订单编号。
+func generateOrderNo() (string, error) {
+
+	var data [16]byte
+
+	_, err := rand.Read(data[:])
+
+	if err != nil {
+		return "", err
+	}
+
+	return "ORD-" + hex.EncodeToString(data[:]), nil
+}
+
+// Purchase 原子扣票，创建订单及购票流水
 func (r *GORMTrainRepository) Purchase(
 	ctx context.Context,
 	id string,
+	userID string,
 	quantity int,
-) (model.PurchaseLog, error) {
+) (model.Order, error) {
 
-	var log model.PurchaseLog
+	// 防御性校验，避免非法数量进入数据库操作。
+	if quantity <= 0 || quantity > 10 {
+		return model.Order{}, errors.New("非法购票数量")
+	}
 
-	err := r.db.WithContext(ctx).Transaction(
+	var order model.Order
+
+	// 在开启事务之前生成订单编号。
+	orderNo, err := generateOrderNo()
+
+	if err != nil {
+		return model.Order{}, err
+	}
+
+	err = r.db.WithContext(ctx).Transaction(
 		func(tx *gorm.DB) error {
 
 			// 第一步：数据库原子条件更新。
@@ -159,8 +239,9 @@ func (r *GORMTrainRepository) Purchase(
 				return result.Error
 			}
 
-			// 更新失败：进一步区分车次不存在与余票不足。
+			// 第二步：判断是否成功扣票。
 			if result.RowsAffected == 0 {
+
 				var train model.Train
 
 				err := tx.Where("id = ?", id).
@@ -177,20 +258,53 @@ func (r *GORMTrainRepository) Purchase(
 				return ErrInsufficientSeats
 			}
 
-			// 第二步：写入购票流水。
-			log = model.PurchaseLog{
+			// 第三步：在同一事务中查询车次信息。
+			var train model.Train
+
+			if err := tx.Where("id = ?", id).
+				Take(&train).Error; err != nil {
+
+				return err
+			}
+
+			// 防止计算订单金额时发生 int64 溢出。
+			if train.PriceCents <= 0 ||
+				train.PriceCents > math.MaxInt64/int64(quantity) {
+
+				return errors.New("订单金额不合法")
+			}
+
+			// 第四步：构造正式订单对象。
+			order = model.Order{
+				OrderNo:          orderNo,
+				TrainID:          id,
+				UserID:           userID,
+				Quantity:         quantity,
+				UnitPriceCents:   train.PriceCents,
+				TotalAmountCents: train.PriceCents * int64(quantity),
+				Status:           model.OrderStatusSuccess,
+			}
+
+			// 第五步：写入正式订单。
+			if err := tx.Create(&order).Error; err != nil {
+				return err
+			}
+
+			// 第六步：保留原有购票流水。
+			log := model.PurchaseLog{
 				TrainID:  id,
 				Quantity: quantity,
 			}
 
-			// 必须使用 tx，而不是 r.db。
 			return tx.Create(&log).Error
 		},
 	)
 
+	// 事务执行失败，返回空订单及错误。
 	if err != nil {
-		return model.PurchaseLog{}, err
+		return model.Order{}, err
 	}
 
-	return log, nil
+	// 只有事务成功提交才返回正式订单。
+	return order, nil
 }

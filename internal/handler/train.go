@@ -50,7 +50,8 @@ type patchTrainRequest struct {
 }
 
 type purchaseRequest struct {
-	Quantity int `json:"quantity" binding:"required"`
+	UserID   string `json:"user_id" binding:"required"`
+	Quantity int    `json:"quantity" binding:"required"`
 }
 
 // GET /api/trains
@@ -185,14 +186,15 @@ func (h *TrainHandler) purchase(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "JSON 格式或购买数量不正确",
+			"error": "JSON 格式或购票参数不正确",
 		})
 		return
 	}
 
-	log, err := h.service.Purchase(
+	order, err := h.service.Purchase(
 		c.Request.Context(),
 		c.Param("id"),
+		req.UserID,
 		req.Quantity,
 	)
 
@@ -201,9 +203,9 @@ func (h *TrainHandler) purchase(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":      "扣票成功；正式订单功能将在 03.2 实现",
-		"purchase_log": log,
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "购票成功",
+		"data":    order,
 	})
 }
 

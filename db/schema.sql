@@ -44,3 +44,55 @@ CREATE TABLE IF NOT EXISTS purchase_logs (
 
                                              INDEX idx_log_train (train_id)
 ) ENGINE=InnoDB;
+
+
+
+CREATE TABLE IF NOT EXISTS orders (
+                                      id BIGINT UNSIGNED NOT NULL
+                                          AUTO_INCREMENT PRIMARY KEY,
+
+                                      order_no VARCHAR(64) NOT NULL UNIQUE,
+
+                                      train_id VARCHAR(32) NOT NULL,
+
+                                      user_id VARCHAR(64) NOT NULL,
+
+                                      quantity INT NOT NULL,
+
+                                      unit_price_cents BIGINT NOT NULL,
+
+                                      total_amount_cents BIGINT NOT NULL,
+
+                                      status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS',
+
+                                      created_at DATETIME(3) NOT NULL
+                                                                  DEFAULT CURRENT_TIMESTAMP(3),
+
+                                      updated_at DATETIME(3) NOT NULL
+                                                                  DEFAULT CURRENT_TIMESTAMP(3)
+                                          ON UPDATE CURRENT_TIMESTAMP(3),
+
+                                      CONSTRAINT ck_order_quantity
+                                          CHECK (quantity > 0 AND quantity <= 10),
+
+                                      CONSTRAINT ck_order_price
+                                          CHECK (unit_price_cents > 0),
+
+                                      CONSTRAINT ck_order_amount
+                                          CHECK (
+                                              total_amount_cents = unit_price_cents * quantity
+                                              ),
+
+                                      CONSTRAINT ck_order_status
+                                          CHECK (status IN ('SUCCESS', 'CANCELLED')),
+
+                                      CONSTRAINT fk_order_train
+                                          FOREIGN KEY (train_id)
+                                              REFERENCES trains(id)
+                                              ON DELETE RESTRICT,
+
+                                      INDEX idx_order_train (train_id),
+
+                                      INDEX idx_order_user (user_id)
+
+) ENGINE=InnoDB;
