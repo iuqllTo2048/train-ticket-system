@@ -87,8 +87,11 @@ func (m *TaskManager) markRunning(id uint64) {
 	info.StartedAt = time.Now()
 }
 
-// markCompleted 将任务标记为执行成功。
-func (m *TaskManager) markCompleted(id uint64) {
+// markCompleted 将任务标记为执行成功，并保存业务结果引用。
+func (m *TaskManager) markCompleted(
+	id uint64,
+	resultRef string,
+) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -97,6 +100,7 @@ func (m *TaskManager) markCompleted(id uint64) {
 		return
 	}
 
+	info.ResultRef = resultRef
 	info.Status = TaskCompleted
 	info.FinishedAt = time.Now()
 	info.Duration = info.FinishedAt.Sub(info.StartedAt)
@@ -128,7 +132,7 @@ func (m *TaskManager) markFailed(id uint64, err error) {
 	}
 }
 
-// Submit 创建任务记录，并将任务提交给 WorkerPool。
+// Submit 提交只返回错误的普通任务。
 func (m *TaskManager) Submit(
 	name string,
 	task TaskFunc,
@@ -138,13 +142,31 @@ func (m *TaskManager) Submit(
 		return 0, fmt.Errorf("task must not be nil")
 	}
 
-	// 1. 创建任务记录
+	return m.SubmitWithResult(
+		name,
+		func() (string, error) {
+			return "", task()
+		},
+	)
+}
+
+// SubmitWithResult 提交能够返回业务结果引用的任务。
+func (m *TaskManager) SubmitWithResult(
+	name string,
+	task ResultTaskFunc,
+) (uint64, error) {
+
+	if task == nil {
+		return 0, fmt.Errorf("task must not be nil")
+	}
+
+	// 1. 创建任务记录。
 	id := m.createTask(name)
 
-	// 2. 包装原始业务函数
+	// 2. 包装原始业务函数。
 	wrappedTask := func() {
 
-		// 捕获业务任务产生的 panic
+		// 捕获任务执行过程中产生的 panic。
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				m.markFailed(
@@ -154,29 +176,29 @@ func (m *TaskManager) Submit(
 			}
 		}()
 
-		// 记录任务开始执行
+		// 记录任务开始执行。
 		m.markRunning(id)
 
-		// 执行原始业务函数
-		err := task()
+		// 执行原始业务函数，接收结果和错误。
+		resultRef, err := task()
 
-		// 处理业务错误
+		// 处理业务错误。
 		if err != nil {
 			m.markFailed(id, err)
 			return
 		}
 
-		// 记录任务执行成功
-		m.markCompleted(id)
+		// 同时记录任务完成状态和业务结果。
+		m.markCompleted(id, resultRef)
 	}
 
-	// 3. 将包装后的函数提交给 WorkerPool
+	// 3. 将包装后的函数提交给 WorkerPool。
 	if !m.pool.Submit(wrappedTask) {
 		err := fmt.Errorf("worker pool rejected task")
 		m.markFailed(id, err)
 		return id, err
 	}
 
-	// 4. 返回任务 ID
+	// 4. 返回任务 ID。
 	return id, nil
 }

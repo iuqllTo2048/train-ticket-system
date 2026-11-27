@@ -1,23 +1,31 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"example.com/train-ticket-system/backend-app/internal/repository"
 	"example.com/train-ticket-system/backend-app/internal/service"
+	"example.com/train-ticket-system/backend-app/internal/taskmanager"
 	"github.com/gin-gonic/gin"
 )
 
 type TrainHandler struct {
-	service *service.TrainService
+	service     *service.TrainService
+	taskManager *taskmanager.TaskManager
 }
 
 func NewTrainHandler(
 	s *service.TrainService,
+	tm *taskmanager.TaskManager,
 ) *TrainHandler {
-	return &TrainHandler{service: s}
+	return &TrainHandler{
+		service:     s,
+		taskManager: tm,
+	}
 }
 
 func (h *TrainHandler) RegisterRoutes(router *gin.Engine) {
@@ -31,6 +39,7 @@ func (h *TrainHandler) RegisterRoutes(router *gin.Engine) {
 	group.DELETE("/:id", h.delete)
 
 	group.POST("/:id/purchase", h.purchase)
+	group.POST("/:id/purchase/async", h.purchaseAsync)
 }
 
 type createTrainRequest struct {
@@ -206,6 +215,69 @@ func (h *TrainHandler) purchase(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "购票成功",
 		"data":    order,
+	})
+}
+
+// POST /api/trains/:id/purchase/async
+func (h *TrainHandler) purchaseAsync(c *gin.Context) {
+
+	// 1. 解析购票请求参数。
+	var req purchaseRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "JSON 格式或购票参数不正确",
+		})
+		return
+	}
+
+	// 2. 提前提取业务参数。
+	trainID := c.Param("id")
+	userID := req.UserID
+	quantity := req.Quantity
+
+	// 3. 将购票业务包装为异步任务。
+	taskID, err := h.taskManager.SubmitWithResult(
+		"purchase",
+		func() (string, error) {
+
+			// 创建独立的任务执行 Context。
+			ctx, cancel := context.WithTimeout(
+				context.Background(),
+				10*time.Second,
+			)
+			defer cancel()
+
+			// 复用原有的真实购票业务。
+			order, err := h.service.Purchase(
+				ctx,
+				trainID,
+				userID,
+				quantity,
+			)
+
+			if err != nil {
+				return "", err
+			}
+
+			// 返回正式订单编号。
+			return order.OrderNo, nil
+		},
+	)
+
+	// 4. 处理任务提交失败。
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"message": "购票任务提交失败",
+			"task_id": taskID,
+		})
+		return
+	}
+
+	// 5. 返回任务提交成功响应。
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "购票任务已提交",
+		"task_id": taskID,
 	})
 }
 
