@@ -101,6 +101,9 @@ func main() {
 		taskManager,
 	)
 
+	// 站点查询依赖注入。
+	stationHandler := handler.NewStationHandler(trainSvc)
+
 	//  订单查询依赖注入
 	orderRepo := repository.NewGORMOrderRepository(db)
 	orderSvc := service.NewOrderService(orderRepo)
@@ -118,6 +121,7 @@ func main() {
 	trainHandler.RegisterRoutes(router)
 	orderHandler.RegisterRoutes(router)
 	taskHandler.RegisterRoutes(router)
+	stationHandler.RegisterRoutes(router)
 
 	log.Println(
 		"backend-app 已连接 MySQL，HTTP 地址 http://127.0.0.1:8080",

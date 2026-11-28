@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"example.com/train-ticket-system/backend-app/internal/datastructure"
 	"fmt"
 	"strings"
+	"sync"
 
 	"example.com/train-ticket-system/backend-app/internal/model"
 	"example.com/train-ticket-system/backend-app/internal/repository"
@@ -14,6 +16,9 @@ var ErrInvalidInput = errors.New("请求参数不合法")
 
 type TrainService struct {
 	repo repository.TrainRepository
+
+	stationMu    sync.RWMutex
+	stationIndex *datastructure.Trie
 }
 
 func NewTrainService(
@@ -92,9 +97,19 @@ func (s *TrainService) Create(
 		AvailableSeats: in.TotalSeats,
 	}
 
+	s.stationMu.Lock()
+	defer s.stationMu.Unlock()
+
+	// 使旧索引失效。
+	s.stationIndex = nil
+
+	// 执行原有数据库写入操作。
 	if err := s.repo.Create(ctx, train); err != nil {
 		return model.Train{}, err
 	}
+
+	// 数据库写入成功后，重建站点索引。
+	s.refreshStationIndexLocked(ctx)
 
 	return s.repo.FindByID(ctx, train.ID)
 }
@@ -116,6 +131,9 @@ func (s *TrainService) Update(
 			ErrInvalidInput,
 		)
 	}
+
+	s.stationMu.Lock()
+	defer s.stationMu.Unlock()
 
 	train, err := s.repo.FindByID(ctx, id)
 	if err != nil {
@@ -152,9 +170,13 @@ func (s *TrainService) Update(
 		)
 	}
 
+	s.stationIndex = nil
+
 	if err := s.repo.UpdateInfo(ctx, id, changes); err != nil {
 		return model.Train{}, err
 	}
+
+	s.refreshStationIndexLocked(ctx)
 
 	return s.repo.FindByID(ctx, id)
 }
@@ -164,7 +186,18 @@ func (s *TrainService) Delete(
 	ctx context.Context,
 	id string,
 ) error {
-	return s.repo.Delete(ctx, id)
+	s.stationMu.Lock()
+	defer s.stationMu.Unlock()
+
+	s.stationIndex = nil
+
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+
+	s.refreshStationIndexLocked(ctx)
+
+	return nil
 }
 
 // Purchase 执行购票业务，并返回正式订单。

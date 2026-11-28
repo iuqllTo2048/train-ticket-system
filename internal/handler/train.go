@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"example.com/train-ticket-system/backend-app/internal/repository"
@@ -32,6 +33,7 @@ func (h *TrainHandler) RegisterRoutes(router *gin.Engine) {
 	group := router.Group("/api/trains")
 
 	group.GET("", h.list)
+	group.GET("/recommend", h.recommend)
 	group.GET("/:id", h.get)
 
 	group.POST("", h.create)
@@ -310,4 +312,42 @@ func respondError(c *gin.Context, err error) {
 			"error": "服务器内部错误",
 		})
 	}
+}
+
+func (h *TrainHandler) recommend(c *gin.Context) {
+	// 1. 获取查询参数。
+	from := c.Query("from")
+	to := c.Query("to")
+
+	strategy := c.DefaultQuery("strategy", "price")
+	kStr := c.DefaultQuery("k", "3")
+
+	// 2. 转换 k。
+	k, err := strconv.Atoi(kStr)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "k 必须是整数",
+		})
+		return
+	}
+
+	// 3. 调用 Service 推荐车次。
+	trains, err := h.service.RecommendTrains(
+		c.Request.Context(),
+		from,
+		to,
+		strategy,
+		k,
+	)
+
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	// 4. 返回推荐结果。
+	c.JSON(http.StatusOK, gin.H{
+		"data": trains,
+	})
 }
